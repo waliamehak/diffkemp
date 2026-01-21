@@ -7,8 +7,12 @@ information about:
 - [How to build DiffKemp](#build)
 - [How to check code follows the coding style](#coding-style)
 - [Where the tests are located and how to run them](#tests)
+- [How to add support for new version of LLVM](#adding-a-new-version-of-llvm-to-the-project)
 - [Links to tools for performing experiments](#tools-for-performing-experiments)
 - [Useful links to learn more](#useful-links)
+
+To learn about **how to contribute your changes to the main repository**,
+read [contributing guide](./CONTRIBUTING.md).
 
 ## Development environment
 
@@ -17,7 +21,6 @@ For developing DiffKemp, you can use:
 - [Nix Flake](#nix)
 - Your [local environment](#local-development-environment) (installing
   dependencies directly to your system)
-- [(Docker container)](#docker)
 
 ### Nix
 
@@ -68,9 +71,10 @@ nix develop .#diffkemp-llvm14
 This will enter a development shell with all DiffKemp dependencies
 pre-installed. You can then follow the [standard build
 instructions](#build) to build and install DiffKemp. The only
-difference is that it is not possible to run `pip install` inside Nix shell
-(because of the way Nix works) and it is necessary to use the built-in
-`setuptoolsShellHook` function instead.
+difference is that you do not need to install the Python dependencies because
+they are already preinstalled.
+
+The generated executable is then located in `BUILD_DIR/bin/diffkemp`.
 
 We also provide a special Nix environment for retrieving and preparing kernel
 versions necessary for running [regression tests](#python-tests)
@@ -80,40 +84,9 @@ versions necessary for running [regression tests](#python-tests)
 
 You can also develop DiffKemp directly. For this you need to install the
 necessary [dependencies](installation.md#dependencies) to your system and then
-[build DiffKemp](#build).
+you may [build DiffKemp](#build).
 
-### Docker
-
-> [!CAUTION]
-> The docker container is not currently maintained and it is recommended to use
-> [Nix flake](#nix) instead.
-
-We also provide development container image prepared that can be retrieved from
-DockerHub:
-[https://hub.docker.com/r/viktormalik/diffkemp-devel/](https://hub.docker.com/r/viktormalik/diffkemp-devel/)
-
-After that, the container can be run using
-
-```txt
-docker/diffkemp-devel/run-container.py [--llvm-version LLVM_VERSION]
-                                       [--build-dir BUILD_DIR]
-                                       [--diffkemp-dir DIFFKEMP_DIR]
-                                       [--image IMAGE]
-```
-
-The script mounts the current directory as a volume inside the container.
-Then it automatically builds SimpLL in `BUILD_DIR` (default is "build") using
-`LLVM_VERSION` (default is the newest supported version) and installs DiffKemp.
-
-If running multiple containers at the same time, you need to specify a unique
-`BUILD_DIR` for each one.
-
-If running the container from a different directory than the root DiffKemp
-directory, you need to specify where DiffKemp is located using the
-`--diffkemp-dir` option.
-
-By default, the DockerHub image is used, but a custom image may be set using
-the `--image` option.
+The generated executable is then located in `BUILD_DIR/bin/diffkemp`.
 
 ## Build
 
@@ -122,7 +95,6 @@ To build DiffKemp, use the following commands:
 ```sh
 cmake -S . -B build -GNinja -DBUILD_VIEWER=On
 ninja -C build
-pip install -e . # In case of Nix use setuptoolsShellHook instead
 ```
 
 - `-DBUILD_VIEWER=On`: This flag will install packages and build the result
@@ -130,21 +102,21 @@ pip install -e . # In case of Nix use setuptoolsShellHook instead
   want to use `-DBUILD_VIEWER=Off` instead.
 
 If you make changes to the SimpLL library, you will need to rebuild it by
-running `ninja -C build`. We are using [CFFI](https://cffi.readthedocs.io/en/stable/)
-for accessing the library from the Python. The CFFI is not rebuilt by default,
-so even if you rebuild the library, the changes will not be visible when running
-`diffkemp compare ...`. Currently, you have multiple options to overcome this:
+running `ninja -C <BUILD_DIR>`. We are using [CFFI](https://cffi.readthedocs.io/en/stable/)
+for accessing the library from the Python.
 
-1. Use `diffkemp compare --disable-simpll-ffi ...` which will run SimpLL
-  through a binary instead of the CFFI.
-2. On some OS distributions, it is enough to run `pip install -e .` again.
-3. Another option is to to run `rm build/_simpll.abi3.so` and then run `cmake`
-  again with `-DSIMPLL_REBUILD_BINDINGS=On` flag. After this, when you make
-  changes to the SimpLL library, running `ninja -C build` should be enough and
-  it should rebuild the CFFI, and the changes should be visible when running
-  `diffkemp compare ...`.
-  (Note: This does not seems to be working in the [Nix development environment](#nix-as-development-environment),
-  so use option 1 instead.)
+To be able to use DiffKemp, it is also necessary to **install Python dependencies**,
+you can install them:
+
+- by running `pip install . && pip uninstall -y diffkemp` or
+- install them manually by using `pip install <DEPENDENCIES>` (dependencies are
+  specified in `packages` field in `pyproject.toml` file).
+
+> [!NOTE]
+> If you used different than the default build directory (`build`) and want to
+> use `pip install .` for installing python dependencies, then you need to
+> specify the build directory when running `pip` by using
+> `SIMPLL_BUILD_DIR=<BUILD_DIR> pip install .`.
 
 ## Coding style
 
@@ -167,7 +139,18 @@ The project contains multiple tests:
 
 ### Python tests
 
-The tests use pytest and can be run by:
+By default, the DiffKemp generates its own test runner executable located in
+`BUILD_DIR/bin/run_pytest_tests.py`.
+
+In addition to the standard `diffkemp` package you also have to install the
+development dependencies by running:
+
+```sh
+pip instal .[dev]
+```
+
+In a case where you have installed both the `diffkemp` package and development
+dependencies you can run the tests by:
 
 ```sh
 pytest tests
@@ -223,6 +206,22 @@ by:
 ninja -C build test
 ```
 
+In case the tests fail, enabling logger can simplify the debugging process.
+The logger is enabled by setting the `SIMPLL_VERBOSITY` environment variable to
+a number, where:
+
+- `0`: No logging
+- `1`: Minimal logging
+- `2`: Moderate logging
+- `3` and more: Detailed logging (the most verbose)
+
+For example, to enable moderate logging while running tests with `ninja`, use
+the following command:
+
+```sh
+SIMPLL_VERBOSITY=2 ninja -C build test
+```
+
 ### Tests for the result viewer
 
 The result viewer contains unit tests and integration tests located in
@@ -233,12 +232,58 @@ npm --prefix view test -- --watchAll
 npm --prefix view run cypress:run
 ```
 
+## Adding a new version of LLVM to the project
+
+Diffkemp is based on augmentation of the
+[`FunctionComparator`](https://llvm.org/doxygen/classllvm_1_1FunctionComparator.html);
+however, this class is not polymorphic in the upstream and because of that we
+have to add it to the project manually. The steps required to do so are:
+
+1. Extract the
+   [`FunctionComparator.cpp`](https://github.com/llvm/llvm-project/blob/main/llvm/lib/Transforms/Utils/FunctionComparator.cpp)
+   and
+   [`FunctionComparator.h`](https://github.com/llvm/llvm-project/blob/main/llvm/include/llvm/Transforms/Utils/FunctionComparator.h)
+   from the LLVM project monorepo, take the most recent release of your target
+   major version (i.e., prefer
+   [19.1.7](https://github.com/llvm/llvm-project/releases/tag/llvmorg-19.1.7)
+   over
+   [19.1.6](https://github.com/llvm/llvm-project/releases/tag/llvmorg-19.1.6)).
+2. Create a new subdirectory at path `diffkemp/simpll/llvm-lib/<MAJOR VERSION>`,
+   where `MAJOR VERSION` is the major version of the LLVM that you want to
+   support.
+3. Move all private methods of `FunctionComparator` to protected scope.
+4. Make all methods of `FunctionComparator` and `GlobalNumberState` `virtual`.
+5. Change the path to `FunctionComparator` header in the source file of
+   the version that you are adding (it has to be made local, instead of
+   including the LLVM one).
+   ```diff
+   - #include "llvm/Transforms/Utils/FunctionComparator.h"
+   + #include "FunctionComparator.h"
+   ```
+6. Update CI (i.e., add the new version to the list
+   [here](https://github.com/diffkemp/diffkemp/blob/master/.github/workflows/ci.yml)
+   and change the most recent LLVM version
+   [here](https://github.com/diffkemp/diffkemp/blob/master/.github/workflows/builds.yml))
+   and Nix (change the range of supported version
+   [here](https://github.com/diffkemp/diffkemp/blob/master/flake.nix)) files
+   with your new version. You also have to update the
+   [docs](https://github.com/diffkemp/diffkemp/blob/master/docs/installation.md).
+7. Make the project compilable and resolve any performance issues. However, you
+   have to make sure that the source code of the whole project is working with
+   all supported LLVM versions. This is usually achieved by introduction of
+   preprocessor directives into the code, an example can found
+   [here](https://github.com/diffkemp/diffkemp/commit/8912507d38d3a9591ee55f00a6d7524b204d0255#diff-a89268e38521e9e557604612a43cbf120ef94027230cfeea75fe24fe17f10c81R42).
+8. Fix the code formatting according to the new version of `clang-format`. This
+   can be done by running the script `tools/check-clang-format.sh -di` and
+   commiting the changes.
+
 ## Tools for performing experiments
 
 We have some tools which can be handy when developing DiffKemp:
 
 - [Tool for building and subsequently comparing multiple versions of a provided
    C project](https://github.com/zacikpa/diffkemp-analysis)
+- [Tool for checking semantic equality of several commits using DiffKemp](https://github.com/FrNecas/commit-analysis)
 - [Tool for running DiffKemp with EqBench dataset of equivalent and
    non-equivalent program pairs](https://github.com/diffkemp/EqBench-workflow):
    You can use this tool if you make bigger changes to the SimpLL library to

@@ -18,9 +18,6 @@
 #include <llvm/IR/Operator.h>
 #include <sstream>
 #include <z3++.h>
-#if LLVM_VERSION_MAJOR < 11
-#include <llvm/Analysis/OrderedBasicBlock.h>
-#endif
 
 using namespace llvm;
 
@@ -53,12 +50,15 @@ void SmtBlockComparator::findSnippetEnd(BasicBlock::const_iterator &InstL,
             // the snippets are found to be unequal since otherwise, wrong
             // inlining would be done.
             auto tryInlineBackup = fComp->ModComparator->tryInline;
+            LOG_OFF();
             if (fComp->cmpBasicBlocksFromInstructions(
                         BBL, BBR, InstL, InstR, true, true)
                 == 0) {
+                LOG_ON();
                 // Found a synchronization point
                 return;
             }
+            LOG_ON();
             fComp->ModComparator->tryInline = tryInlineBackup;
             fComp->sn_mapL = sn_mapL_backup;
             fComp->sn_mapR = sn_mapR_backup;
@@ -153,22 +153,11 @@ z3::expr SmtBlockComparator::createConstant(z3::context &c,
             return c.bv_val(value, bitWidth);
         }
     } else if (constant->getType()->isFloatTy()) {
-#if LLVM_VERSION_MAJOR < 11
-        return c.fpa_val(
-                dyn_cast<ConstantFP>(constant)->getValueAPF().convertToFloat());
-#else
         return c.fpa_val(
                 dyn_cast<ConstantFP>(constant)->getValue().convertToFloat());
-#endif
     } else if (constant->getType()->isDoubleTy()) {
-#if LLVM_VERSION_MAJOR < 11
-        return c.fpa_val(dyn_cast<ConstantFP>(constant)
-                                 ->getValueAPF()
-                                 .convertToDouble());
-#else
         return c.fpa_val(
                 dyn_cast<ConstantFP>(constant)->getValue().convertToDouble());
-#endif
     } else {
         throw UnsupportedOperationException("Unsupported constant type");
     }
@@ -438,7 +427,7 @@ z3::expr SmtBlockComparator::encodeBinaryOperator(
     case Instruction::SDiv: {
         // Signed division is the default behavior of the overload.
         auto div = res == op1 / op2;
-        if (dyn_cast<SDivOperator>(Inst)->isExact()) {
+        if (dyn_cast<PossiblyExactOperator>(Inst)->isExact()) {
             auto precond = z3::srem(op1, op2) == 0;
             e = z3::implies(precond, div);
         } else {
@@ -448,7 +437,7 @@ z3::expr SmtBlockComparator::encodeBinaryOperator(
     }
     case Instruction::UDiv: {
         auto div = res == z3::udiv(op1, op2);
-        if (dyn_cast<UDivOperator>(Inst)->isExact()) {
+        if (dyn_cast<PossiblyExactOperator>(Inst)->isExact()) {
             auto precond = z3::urem(op1, op2) == 0;
             e = z3::implies(precond, div);
         } else {
@@ -570,12 +559,7 @@ bool SmtBlockComparator::isOutputVar(BasicBlock::const_iterator Inst,
             Inst->users().begin(), Inst->users().end(), [&End](const User *u) {
                 auto I = dyn_cast<Instruction>(u);
                 if (I && I->getParent() == End->getParent()) {
-#if LLVM_VERSION_MAJOR < 11
-                    OrderedBasicBlock OBB(I->getParent());
-                    return OBB.dominates(&*End, I) || &*End == I;
-#else
                     return End->comesBefore(I) || &*End == I;
-#endif
                 } else {
                     return true;
                 }
@@ -693,6 +677,17 @@ int SmtBlockComparator::compareSnippets(BasicBlock::const_iterator &StartL,
     }
 
     s.add(constructPostCondition(c, StartL, EndL, StartR, EndR));
+
+    LOG_VERBOSE_EXTRA("SMT formula:\n");
+    LOG_INDENT();
+    if (IS_LOG_VERBOSE_EXTRA_ON()) {
+        std::istringstream formulaStream(s.to_smt2());
+        std::string line;
+        while (std::getline(formulaStream, line)) {
+            LOG_VERBOSE_EXTRA(line << "\n");
+        }
+    }
+    LOG_UNINDENT();
 
     auto start = timeSinceEpochMillisec();
     switch (s.check()) {

@@ -27,9 +27,12 @@ if (${SANITIZE_ADDRESS})
   add_link_options(-fsanitize=address -fno-omit-frame-pointer)
 endif()
 
-exec_program(llvm-config ARGS --libs irreader passes support OUTPUT_VARIABLE llvm_libs)
-exec_program(llvm-config ARGS --system-libs OUTPUT_VARIABLE system_libs)
-string(STRIP ${system_libs} system_libs)
+execute_process(COMMAND llvm-config --libs irreader passes support
+                OUTPUT_VARIABLE llvm_libs
+                OUTPUT_STRIP_TRAILING_WHITESPACE)
+execute_process(COMMAND llvm-config --system-libs
+                OUTPUT_VARIABLE system_libs
+                OUTPUT_STRIP_TRAILING_WHITESPACE)
 
 # Try to find system-wide Z3 (e.g. local build)
 find_package(Z3 CONFIG)
@@ -40,7 +43,7 @@ endif()
 
 add_library(simpll-lib ${srcs} ${passes} ${library})
 target_include_directories(simpll-lib PRIVATE ${Z3_CXX_INCLUDE_DIRS})
-target_link_libraries(simpll-lib PRIVATE ${Z3_LIBRARIES})
+target_link_libraries(simpll-lib PRIVATE ${Z3_LIBRARIES} -lstdc++ -lgcc_s)
 target_compile_options(simpll-lib PRIVATE ${Z3_COMPONENT_CXX_FLAGS})
 add_executable(simpll SimpLL.cpp)
 set_target_properties(simpll PROPERTIES PREFIX "diffkemp-")
@@ -49,13 +52,20 @@ if (NOT ${system_libs} STREQUAL "")
     target_link_libraries(simpll ${system_libs})
 endif()
 
-if(SIMPLL_REBUILD_BINDINGS)
-add_custom_target(python-ffi ALL DEPENDS _simpll.c)
-add_custom_command(OUTPUT "${CMAKE_CURRENT_SOURCE_DIR}/_simpll.c"
-                   DEPENDS simpll-lib
-                   WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
-                   COMMAND "${CMAKE_CURRENT_SOURCE_DIR}/simpll_build.py")
-endif()
+if (NOT DEFINED $ENV{SIMPLL_BUILD_DIR})
+  message(STATUS "Setting SIMPLL_BUILD_DIR to ${CMAKE_BINARY_DIR}")
+  set(simpll_build_dir ${CMAKE_BINARY_DIR})
+else ()
+  set(simpll_build_dir $ENV{SIMPLL_BUILD_DIR})
+endif ()
+
+add_custom_target(python-ffi ALL DEPENDS "${CMAKE_CURRENT_BINARY_DIR}/_simpll.c")
+add_custom_command(OUTPUT "${CMAKE_CURRENT_BINARY_DIR}/_simpll.c"
+  DEPENDS simpll-lib "simpll_build.py"
+  COMMENT "Building CFFI python bindings for SimpLL"
+  WORKING_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}"
+  COMMAND cp ${CMAKE_CURRENT_SOURCE_DIR}/simpll_build.py .
+  && ${CMAKE_COMMAND} -E env PATH=$ENV{PATH} "SIMPLL_BUILD_DIR=${simpll_build_dir}" python3 simpll_build.py)
 
 if(SIMPLL_INSTALL_BINARY)
 install(TARGETS simpll

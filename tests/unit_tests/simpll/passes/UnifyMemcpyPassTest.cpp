@@ -19,6 +19,12 @@
 #include <llvm/Passes/PassBuilder.h>
 #include <passes/UnifyMemcpyPass.h>
 
+#if LLVM_VERSION_MAJOR >= 18
+#define GET_INT8_PTR_TYPE llvm::PointerType::getUnqual
+#else
+#define GET_INT8_PTR_TYPE llvm::Type::getInt8PtrTy
+#endif // LLVM_MAJOR_VERSION
+
 /// Creates a function with two memcpy intrinsics - one with alignment set to
 /// 0, the second with alignment set to 2. The first one should be changed to
 /// 1 by the pass.
@@ -39,15 +45,10 @@ TEST(UnifyMemcpyPassTest, AlignmentUnification) {
     auto DestAlloca = Builder.CreateAlloca(
             Type::getInt8Ty(Ctx), ConstantInt::get(Type::getInt32Ty(Ctx), 10));
     auto SizeConst = ConstantInt::get(Type::getInt32Ty(Ctx), 5);
-#if LLVM_VERSION_MAJOR < 10
-    Builder.CreateMemCpy(DestAlloca, 0, SrcAlloca, 0, SizeConst);
-    Builder.CreateMemCpy(DestAlloca, 2, SrcAlloca, 2, SizeConst);
-#else
     Builder.CreateMemCpy(
             DestAlloca, MaybeAlign(0), SrcAlloca, MaybeAlign(0), SizeConst);
     Builder.CreateMemCpy(
             DestAlloca, MaybeAlign(2), SrcAlloca, MaybeAlign(2), SizeConst);
-#endif
     Builder.CreateRetVoid();
 
     // Run the pass and check the results,
@@ -85,13 +86,8 @@ TEST(UnifyMemcpyPassTest, AlignmentUnification) {
     ASSERT_EQ(TestCall1->getOperand(0), DestAlloca);
     ASSERT_EQ(TestCall1->getOperand(1), SrcAlloca);
     ASSERT_EQ(TestCall1->getOperand(2), SizeConst);
-#if LLVM_VERSION_MAJOR < 10
-    ASSERT_EQ(TestCall1->getParamAlignment(0), 1);
-    ASSERT_EQ(TestCall1->getParamAlignment(1), 1);
-#else
     ASSERT_EQ(TestCall1->getParamAlign(0), MaybeAlign(1));
     ASSERT_EQ(TestCall1->getParamAlign(1), MaybeAlign(1));
-#endif
     ++Iter;
 
     // call void @llvm.memcpy.p0i8.p0i8.i32(i8* align 2 %2, i8* align 2 %1, i32
@@ -108,13 +104,8 @@ TEST(UnifyMemcpyPassTest, AlignmentUnification) {
     ASSERT_EQ(TestCall2->getOperand(0), DestAlloca);
     ASSERT_EQ(TestCall2->getOperand(1), SrcAlloca);
     ASSERT_EQ(TestCall2->getOperand(2), SizeConst);
-#if LLVM_VERSION_MAJOR < 10
-    ASSERT_EQ(TestCall2->getParamAlignment(0), 2);
-    ASSERT_EQ(TestCall2->getParamAlignment(1), 2);
-#else
     ASSERT_EQ(TestCall2->getParamAlign(0), MaybeAlign(2));
     ASSERT_EQ(TestCall2->getParamAlign(1), MaybeAlign(2));
-#endif
     ++Iter;
 
     ASSERT_NE(Iter, BB->end());
@@ -132,8 +123,8 @@ TEST(UnifyMemcpyPassTest, KernelMemcpyToIntrinsic) {
     // Create the memcpy function.
     Function *Memcpy =
             Function::Create(FunctionType::get(Type::getVoidTy(Ctx),
-                                               {Type::getInt8PtrTy(Ctx),
-                                                Type::getInt8PtrTy(Ctx),
+                                               {GET_INT8_PTR_TYPE(Ctx),
+                                                GET_INT8_PTR_TYPE(Ctx),
                                                 Type::getInt32Ty(Ctx)},
                                                false),
                              GlobalValue::ExternalLinkage,

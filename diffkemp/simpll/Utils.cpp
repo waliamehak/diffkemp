@@ -19,6 +19,7 @@
 #include <iostream>
 #include <llvm/Analysis/AliasAnalysis.h>
 #include <llvm/BinaryFormat/Dwarf.h>
+#include <llvm/IR/Constants.h>
 #include <llvm/IR/DIBuilder.h>
 #include <llvm/IR/DebugInfo.h>
 #include <llvm/IR/Instruction.h>
@@ -38,6 +39,28 @@
 #include <numeric>
 #include <set>
 #include <sstream>
+
+#if LLVM_VERSION_MAJOR >= 18
+
+bool hasSuffix(StringRef ref, StringRef suffix) noexcept {
+    return ref.ends_with(suffix);
+}
+
+bool hasPrefix(StringRef ref, StringRef prefix) noexcept {
+    return ref.starts_with(prefix);
+}
+
+#else
+
+bool hasSuffix(StringRef ref, StringRef suffix) noexcept {
+    return ref.endswith(suffix);
+}
+
+bool hasPrefix(StringRef ref, StringRef prefix) noexcept {
+    return ref.startswith(prefix);
+}
+
+#endif // LLVM_VERSION_MAJOR
 
 /// Level of debug indentation. Each level corresponds to two characters.
 static unsigned int debugIndentLevel = 0;
@@ -144,23 +167,23 @@ void deleteAliasToFun(Module &Mod, Function *Fun) {
 }
 
 /// Check if the substring behind the last dot ('.') contains only numbers.
-bool hasSuffix(std::string Name) {
+bool hasNumberSuffix(std::string Name) {
     size_t dotPos = Name.find_last_of('.');
     return dotPos != std::string::npos
            && (Name.find_last_not_of("0123456789.") < dotPos
                || Name.substr(dotPos) == ".void");
 }
 
-/// Remove everything behind the last dot ('.'). Assumes that hasSuffix returned
-/// true for the name.
-std::string dropSuffix(std::string Name) {
+/// Remove everything behind the last dot ('.'). Assumes that hasNumberSuffix
+/// returned true for the name.
+std::string dropNumberSuffix(std::string Name) {
     return Name.substr(0, Name.find_last_of('.'));
 }
 
 /// Join directory path with a filename in case the filename does not already
 /// contain the directory.
 std::string joinPath(StringRef DirName, StringRef FileName) {
-    return FileName.startswith(DirName)
+    return hasPrefix(FileName, DirName)
                    ? FileName.str()
                    : DirName.str() + sys::path::get_separator().str()
                              + FileName.str();
@@ -384,6 +407,60 @@ void findAndReplace(std::string &input, std::string find, std::string replace) {
     }
 }
 
+#if LLVM_VERSION_MAJOR >= 19
+
+const Instruction *getConstExprAsInstruction(const ConstantExpr *CEx) {
+    SmallVector<Value *, 4> ValueOperands(CEx->op_begin(), CEx->op_end());
+    ArrayRef<Value *> Ops(ValueOperands);
+
+    switch (CEx->getOpcode()) {
+    case Instruction::Trunc:
+#if LLVM_VERSION_MAJOR >= 21
+    case Instruction::PtrToAddr:
+#endif
+    case Instruction::PtrToInt:
+    case Instruction::IntToPtr:
+    case Instruction::BitCast:
+    case Instruction::AddrSpaceCast:
+        return CastInst::Create((Instruction::CastOps)CEx->getOpcode(),
+                                Ops[0],
+                                CEx->getType(),
+                                "");
+    case Instruction::InsertElement:
+        return InsertElementInst::Create(Ops[0], Ops[1], Ops[2], "");
+    case Instruction::ExtractElement:
+        return ExtractElementInst::Create(Ops[0], Ops[1], "");
+    case Instruction::ShuffleVector:
+        return new ShuffleVectorInst(Ops[0], Ops[1], CEx->getShuffleMask(), "");
+
+    case Instruction::GetElementPtr: {
+        const auto *GO = cast<GEPOperator>(CEx);
+        return GetElementPtrInst::Create(GO->getSourceElementType(),
+                                         Ops[0],
+                                         Ops.slice(1),
+                                         GO->getNoWrapFlags(),
+                                         "");
+    }
+    default:
+        assert(CEx->getNumOperands() == 2 && "Must be binary operator?");
+        BinaryOperator *BO = BinaryOperator::Create(
+                (Instruction::BinaryOps)CEx->getOpcode(), Ops[0], Ops[1], "");
+        if (isa<OverflowingBinaryOperator>(BO)) {
+            BO->setHasNoUnsignedWrap(
+                    CEx->getRawSubclassOptionalData()
+                    & OverflowingBinaryOperator::NoUnsignedWrap);
+            BO->setHasNoSignedWrap(CEx->getRawSubclassOptionalData()
+                                   & OverflowingBinaryOperator::NoSignedWrap);
+        }
+        if (isa<PossiblyExactOperator>(BO))
+            BO->setIsExact(CEx->getRawSubclassOptionalData()
+                           & PossiblyExactOperator::IsExact);
+        return BO;
+    }
+}
+
+#else
+
 /// Convert constant expression to instruction. (Copied from LLVM and modified
 /// to work outside the ConstantExpr class; otherwise the function is the same,
 /// the only purpose of copying the function is making it work on constant
@@ -458,13 +535,15 @@ const Instruction *getConstExprAsInstruction(const ConstantExpr *CEx) {
     }
 }
 
+#endif
+
 /// Generates human-readable C-like identifier for type.
 std::string getIdentifierForType(Type *Ty) {
     if (auto STy = dyn_cast<StructType>(Ty)) {
         // Remove prefix and append "struct"
-        if (STy->getStructName().startswith("union"))
+        if (hasPrefix(STy->getStructName(), "union"))
             return "union " + STy->getStructName().str().substr(6);
-        else if (STy->getStructName().startswith("struct"))
+        else if (hasPrefix(STy->getStructName(), "struct"))
             return "struct " + STy->getStructName().str().substr(7);
         else
             return "<unknown>";
@@ -615,38 +694,73 @@ std::string getIdentifierForValue(
         return "<unknown>";
 }
 
-/// Retrieve information about a structured type being pointed to by a value.
-/// Note: There are two completely different approaches used. Up to LLVM 14,
-/// type information can be obtained directly from the value. Since LLVM 15,
-/// type information is obtained from calls to debug intrinsics. It is necessary
-/// to provide current function name to use the correct debug intrinsic call
-/// (there can be multiple different ones).
-TypeInfo getPointeeStructTypeInfo(const Value *Val,
-                                  const DataLayout *Layout,
-                                  [[maybe_unused]] const StringRef &FunName) {
-#if LLVM_VERSION_MAJOR >= 15
-    (void)Layout;
-    // Look for the type of the value in debug intrinsics
-    SmallVector<DbgValueInst *> DbgValues;
-    findDbgValues(DbgValues, const_cast<Value *>(Val));
+#if LLVM_VERSION_MAJOR >= 19
 
+/// Returns the debug type of the given Value based on the provided scope
+/// (function name). Returns nullptr if the type cannot be determined.
+/// In LLVM 19, debug records were introduced. Both debug intrinsics and
+/// records are searched to find the type.
+DIType *getDbgTypeForValue(const Value *Val, const StringRef &FunName) {
+    SmallVector<DbgValueInst *> DbgIntrinsics;
+    SmallVector<DbgVariableRecord *> DbgRecords;
+    findDbgValues(DbgIntrinsics, const_cast<Value *>(Val), &DbgRecords);
+    for (auto &Dbg : DbgRecords) {
+        auto scopeName =
+                Dbg->getVariable()->getScope()->getSubprogram()->getName();
+        if (scopeName == FunName) {
+            return Dbg->getVariable()->getType();
+        }
+    }
+    // If type was not found in debug records, search in debug intrinsics.
+    for (auto &Dbg : DbgIntrinsics) {
+        auto scopeName =
+                Dbg->getVariable()->getScope()->getSubprogram()->getName();
+        if (scopeName == FunName) {
+            return Dbg->getVariable()->getType();
+        }
+    }
+    return nullptr;
+}
+
+#elif LLVM_VERSION_MAJOR >= 15
+
+/// Returns the debug type of the given Value based on the provided scope
+/// (function name). Returns nullptr if the type cannot be determined.
+/// The type of the value is determined using debug intrinsics.
+DIType *getDbgTypeForValue(const Value *Val, const StringRef &FunName) {
+    SmallVector<DbgValueInst *> DbgIntrinsics;
+    findDbgValues(DbgIntrinsics, const_cast<Value *>(Val));
     // There can be potentially multiple different dbg info for the same
     // value. It is necessary to find the one belonging to the current function.
     // The other dbg info can belong to called functions where the value could
     // be provided as (void *) and therefore does not have to contain necessary
     // information about the pointee type.
-    DbgValueInst *DbgValue = nullptr;
-    for (auto &Dbg : DbgValues) {
+    for (auto &Dbg : DbgIntrinsics) {
         auto scopeName =
                 Dbg->getVariable()->getScope()->getSubprogram()->getName();
         if (scopeName == FunName) {
-            DbgValue = Dbg;
-            break;
+            return Dbg->getVariable()->getType();
         }
     }
-    if (!DbgValue)
+    return nullptr;
+}
+
+#endif
+
+#if LLVM_VERSION_MAJOR >= 15
+
+/// Retrieve information about a structured type being pointed to by a value.
+/// Type information is obtained from calls to debug intrinsics/records. It is
+/// necessary to provide current function name to use the correct debug
+/// intrinsic call (there can be multiple different ones). The data layout
+/// parameter is unused.
+TypeInfo getPointeeStructTypeInfo(const Value *Val,
+                                  [[maybe_unused]] const DataLayout *Layout,
+                                  const StringRef &FunName) {
+    auto *Ty = getDbgTypeForValue(Val, FunName);
+    if (!Ty) {
         return {"", 0};
-    const DIType *Ty = DbgValue->getVariable()->getType();
+    }
 
     // Check if it is a pointer type (derived type)
     const DIDerivedType *PtrTy = dyn_cast<DIDerivedType>(Ty);
@@ -685,7 +799,16 @@ TypeInfo getPointeeStructTypeInfo(const Value *Val,
     }
 
     return {typeName, StrTy->getSizeInBits() / 8};
-#else
+}
+
+#else /* LLVM_VERSION_MAJOR < 15 */
+
+/// Retrieve information about a structured type being pointed to by a value.
+/// Type information can be obtained directly from the value and data layout,
+/// the function name is unused.
+TypeInfo getPointeeStructTypeInfo(const Value *Val,
+                                  const DataLayout *Layout,
+                                  [[maybe_unused]] const StringRef &FunName) {
     // Get the type of the value
     Type *Ty = Val->getType();
 
@@ -699,8 +822,9 @@ TypeInfo getPointeeStructTypeInfo(const Value *Val,
         return {"", 0};
 
     return {StrTy->getName(), Layout->getTypeStoreSize(StrTy)};
-#endif
 }
+
+#endif /* LLVM_VERSION_MAJOR < 15 */
 
 /// Retrieves the type of the value based on its C source code expression.
 const DIType *getCSourceIdentifierType(std::string expr,
@@ -746,11 +870,7 @@ const DIType *getCSourceIdentifierType(std::string expr,
     // local variables.
     auto Glob = Parent->getParent()->getGlobalVariable(expr);
     if (Glob) {
-#if LLVM_VERSION_MAJOR >= 12
         SmallVector<DIGlobalVariableExpression *> GVs;
-#else
-        SmallVector<DIGlobalVariableExpression *, 1> GVs;
-#endif
         Glob->getDebugInfo(GVs);
         if (!GVs.empty())
             return GVs[0]->getVariable()->getType();
@@ -825,8 +945,10 @@ void copyFunctionProperties(Function *srcFun, Function *destFun) {
 /// are the same or if the DiffKemp pattern name prefixes are used.
 bool namesMatch(const StringRef &L, const StringRef &R, bool IsLeftSide) {
     // Remove number suffixes
-    std::string NameL = hasSuffix(L.str()) ? dropSuffix(L.str()) : L.str();
-    std::string NameR = hasSuffix(R.str()) ? dropSuffix(R.str()) : R.str();
+    std::string NameL =
+            hasNumberSuffix(L.str()) ? dropNumberSuffix(L.str()) : L.str();
+    std::string NameR =
+            hasNumberSuffix(R.str()) ? dropNumberSuffix(R.str()) : R.str();
 
     // Compare the names themselves.
     if (NameL == NameR)
@@ -834,7 +956,7 @@ bool namesMatch(const StringRef &L, const StringRef &R, bool IsLeftSide) {
 
     // If no prefix is present, the names are not equal.
     StringRef NameRRef = NameR;
-    if (!NameRRef.startswith(CustomPatternSet::DefaultPrefix))
+    if (!hasPrefix(NameRRef, CustomPatternSet::DefaultPrefix))
         return false;
 
     // Remove all prefixes.
@@ -843,7 +965,7 @@ bool namesMatch(const StringRef &L, const StringRef &R, bool IsLeftSide) {
     StringRef RealNameRRef =
             NameRRef.substr(CustomPatternSet::DefaultPrefix.size());
 
-    if (RealNameRRef.startswith(PrefixR))
+    if (hasPrefix(RealNameRRef, PrefixR))
         RealNameRRef = RealNameRRef.substr(PrefixR.size());
 
     // Compare the names without prefixes.
@@ -889,10 +1011,8 @@ bool inlineCall(CallInst *Call) {
     InlineFunctionInfo ifi;
 #if LLVM_VERSION_MAJOR >= 16
     return InlineFunction(*Call, ifi, false, nullptr, false).isSuccess();
-#elif LLVM_VERSION_MAJOR >= 11
-    return InlineFunction(*Call, ifi, nullptr, false).isSuccess();
 #else
-    return InlineFunction(Call, ifi, nullptr, false);
+    return InlineFunction(*Call, ifi, nullptr, false).isSuccess();
 #endif
 }
 
@@ -915,11 +1035,7 @@ std::string makeYellow(std::string text) {
 
 /// Return LLVM struct type of the given name
 StructType *getTypeByName(const Module &Mod, StringRef Name) {
-#if LLVM_VERSION_MAJOR >= 12
     return StructType::getTypeByName(Mod.getContext(), Name);
-#else
-    return Mod.getTypeByName(Name);
-#endif
 }
 
 /// Given an instruction and a pointer value, try to determine whether the

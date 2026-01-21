@@ -1,5 +1,5 @@
 cmake_policy(SET CMP0048 NEW)
-cmake_minimum_required(VERSION 3.5)
+cmake_minimum_required(VERSION 3.12..3.31)
 project(diffkemp
     VERSION 0.6.1)
 
@@ -30,6 +30,13 @@ if (${BUILD_LLREVE})
   endif ()
   add_subdirectory(${CMAKE_CURRENT_SOURCE_DIR}/llreve/reve)
 endif ()
+
+message(STATUS "Generating bin/diffkemp executable")
+configure_file(${CMAKE_CURRENT_SOURCE_DIR}/diffkemp/diffkemp.in
+  ${CMAKE_BINARY_DIR}/bin/diffkemp
+  FILE_PERMISSIONS OWNER_READ OWNER_WRITE OWNER_EXECUTE
+                   GROUP_READ
+                   WORLD_READ)
 
 execute_process(COMMAND
   ${CMAKE_CURRENT_SOURCE_DIR}/tools/simpll_clean.sh

@@ -16,7 +16,6 @@
 
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/StringRef.h"
-#include "llvm/IR/Attributes.h"
 #include "llvm/IR/Instructions.h"
 #include "llvm/IR/Operator.h"
 #include "llvm/IR/ValueMap.h"
@@ -28,6 +27,7 @@
 namespace llvm {
 
 class APFloat;
+class AttributeList;
 class APInt;
 class BasicBlock;
 class Constant;
@@ -99,11 +99,6 @@ public:
   /// Test whether the two functions have equivalent behaviour.
   virtual int compare();
 
-  /// Hash a function. Equivalent functions will have the same hash, and unequal
-  /// functions will have different hashes with high probability.
-  using FunctionHash = uint64_t;
-  static FunctionHash functionHash(Function &);
-
 protected:
   /// Start the comparison.
   virtual void beginCompare() {
@@ -115,8 +110,7 @@ protected:
   virtual int compareSignature() const;
 
   /// Test whether two basic blocks have equivalent behaviour.
-  virtual int cmpBasicBlocks(const BasicBlock *BBL, const BasicBlock *BBR)
-      const;
+  virtual int cmpBasicBlocks(const BasicBlock *BBL, const BasicBlock *BBR) const;
 
   /// Constants comparison.
   /// Its analog to lexicographical comparison between hypothetical numbers
@@ -276,7 +270,7 @@ protected:
   /// still must be compared afterwards. In this case it's already guaranteed
   /// that both instructions have the same number of operands.
   virtual int cmpOperations(const Instruction *L, const Instruction *R,
-                            bool &needToCmpOperands) const;
+                    bool &needToCmpOperands) const;
 
   /// cmpType - compares two types,
   /// defines total ordering among the types set.
@@ -321,6 +315,7 @@ protected:
   virtual int cmpTypes(Type *TyL, Type *TyR) const;
 
   virtual int cmpNumbers(uint64_t L, uint64_t R) const;
+  virtual int cmpAligns(Align L, Align R) const;
   virtual int cmpAPInts(const APInt &L, const APInt &R) const;
   virtual int cmpAPFloats(const APFloat &L, const APFloat &R) const;
   virtual int cmpMem(StringRef L, StringRef R) const;
@@ -331,9 +326,10 @@ protected:
   virtual int cmpOrderings(AtomicOrdering L, AtomicOrdering R) const;
   virtual int cmpInlineAsm(const InlineAsm *L, const InlineAsm *R) const;
   virtual int cmpAttrs(const AttributeList L, const AttributeList R) const;
-  virtual int cmpRangeMetadata(const MDNode *L, const MDNode *R) const;
-  virtual int cmpOperandBundlesSchema(const Instruction *L,
-                                      const Instruction *R) const;
+  virtual int cmpMDNode(const MDNode *L, const MDNode *R) const;
+  virtual int cmpMetadata(const Metadata *L, const Metadata *R) const;
+  virtual int cmpInstMetadata(Instruction const *L, Instruction const *R) const;
+  virtual int cmpOperandBundlesSchema(const CallBase &LCS, const CallBase &RCS) const;
 
   /// Compare two GEPs for equivalent pointer arithmetic.
   /// Parts to be compared for each comparison stage,
@@ -344,7 +340,7 @@ protected:
   /// 4. Number of operands.
   /// 5. Compare operands, using cmpValues method.
   virtual int cmpGEPs(const GEPOperator *GEPL, const GEPOperator *GEPR) const;
-  int cmpGEPs(const GetElementPtrInst *GEPL,
+  virtual int cmpGEPs(const GetElementPtrInst *GEPL,
               const GetElementPtrInst *GEPR) const {
     return cmpGEPs(cast<GEPOperator>(GEPL), cast<GEPOperator>(GEPR));
   }
@@ -384,7 +380,6 @@ protected:
   /// So it's impossible to use dominance properties in general.
   mutable DenseMap<const Value*, int> sn_mapL, sn_mapR;
 
-private:
   // The global state we will use
   GlobalNumberState* GlobalNumbers;
 };

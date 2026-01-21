@@ -96,15 +96,24 @@
 #ifndef DIFFKEMP_SIMPLL_LOGGER_H
 #define DIFFKEMP_SIMPLL_LOGGER_H
 
-#include <Config.h>
+#include "Config.h"
 #include <llvm/IR/Type.h>
 #include <llvm/IR/Value.h>
 #include <llvm/Support/Debug.h>
 #include <llvm/Support/raw_ostream.h>
 #include <vector>
 
+// Definition of debug types (used in llvm::setCurrentDebugTypes)
+#define DEBUG_SIMPLL "debug-simpll"
+#define DEBUG_SIMPLL_VERBOSE "debug-simpll-verbose"
+#define DEBUG_SIMPLL_VERBOSE_EXTRA "debug-simpll-verbose-extra"
+
 #define LOGGER_BASE_LEVEL DEBUG_SIMPLL_VERBOSE
 #define LOGGER_FORCE_LEVEL DEBUG_SIMPLL_VERBOSE_EXTRA
+
+// Checks if given logger level is turned on
+#define IS_LOG_VERBOSE_ON() isCurrentDebugType(LOGGER_BASE_LEVEL)
+#define IS_LOG_VERBOSE_EXTRA_ON() isCurrentDebugType(LOGGER_FORCE_LEVEL)
 
 // Temporarily turns off the logger if it is turned on.
 #define LOG_OFF()                                                              \
@@ -119,7 +128,7 @@
 // If it is then nothing happens.
 #define LOG_OFF_FOR_NO_FORCE()                                                 \
     do {                                                                       \
-        if (!isCurrentDebugType(LOGGER_FORCE_LEVEL)) {                         \
+        if (!IS_LOG_VERBOSE_EXTRA_ON()) {                                      \
             LOG_OFF();                                                         \
         }                                                                      \
     } while (false)
@@ -231,7 +240,7 @@ class Logger {
                       const Value right)
                 : level{level}, label{label}, left{left}, right{right} {};
     };
-    Logger(){};
+    Logger() {};
     // prepare message for logging
     void prepLog(const char *label,
                  const class BufferMessage::Value left,
@@ -243,6 +252,8 @@ class Logger {
     void log(bool keep = true, const char *force_keep_type = nullptr);
     // dump all messages from the buffer
     void dump();
+    // sets logger verbosity level
+    void setVerbosity(unsigned level);
 
   protected:
     // set the logger indentation level to the given value, while modifying the
@@ -258,6 +269,8 @@ class Logger {
     std::unique_ptr<llvm::raw_ostream> stream{};
     // null stream used for unwanted messages
     static llvm::raw_null_ostream null_stream;
+    // sets debug types specified in the vector
+    void setDebugTypes(const std::vector<std::string> &debugTypes);
 };
 
 llvm::raw_ostream &operator<<(llvm::raw_ostream &out,

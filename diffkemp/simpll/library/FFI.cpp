@@ -19,8 +19,11 @@
 #include "library/DiffKempUtils.h"
 #include "library/SysctlTable.h"
 #include "passes/CalledFunctionsAnalysis.h"
-#include <cstring>
+
+#include <llvm/Support/ManagedStatic.h>
 #include <llvm/Transforms/Utils/Cloning.h>
+
+#include <cstring>
 #include <unordered_map>
 
 /// Map to store LLVMContext objects for modules.
@@ -100,7 +103,6 @@ void freePointerArray(struct ptr_array PtrArr) { delete[] PtrArr.arr; }
 void freeStringArray(struct ptr_array PtrArr) {
     for (unsigned long i = 0; i < PtrArr.len; i++)
         delete[] (char *)PtrArr.arr[i];
-
     freePointerArray(PtrArr);
 }
 
@@ -321,6 +323,12 @@ void preprocessModuleC(void *Mod, struct builtin_patterns PatternsC) {
     Module *LLVMMod = (Module *)Mod;
     BuiltinPatterns Patterns = BuiltinPatternsFromC(PatternsC);
     preprocessModule(*LLVMMod, nullptr, nullptr, Patterns);
+}
+
+void getLlvmBuildVersion(int *out) {
+    out[0] = LLVM_VERSION_MAJOR;
+    out[1] = LLVM_VERSION_MINOR;
+    out[2] = LLVM_VERSION_PATCH;
 }
 
 void shutdownSimpLL() { llvm_shutdown(); }
